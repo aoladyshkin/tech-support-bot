@@ -2,7 +2,7 @@
 import logging
 import os
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -141,9 +141,29 @@ async def close_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("У вас нет активных диалогов.")
 
 
+async def post_init_setup(application: Application) -> None:
+    """Устанавливает меню команд после инициализации."""
+    # Команды для обычных пользователей
+    user_commands = [
+        BotCommand("start", "Начать / Перезапустить")
+    ]
+    await application.bot.set_my_commands(user_commands)
+
+    # Расширенные команды для админов
+    admin_commands = [
+        BotCommand("start", "Начать / Перезапустить"),
+        BotCommand("close_ticket", "Закрыть активный диалог")
+    ]
+    for admin_id in ADMIN_IDS:
+        try:
+            await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+        except Exception as e:
+            logger.warning(f"Не удалось установить команды для админа {admin_id}: {e}")
+
+
 def main() -> None:
     """Запуск бота."""
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init_setup).build()
 
     # Фильтр для сообщений от админов
     admin_filter = filters.User(user_id=ADMIN_IDS)
