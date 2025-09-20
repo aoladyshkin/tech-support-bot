@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 active_chats = {}
 # Обратный словарь для удобства: {admin_id: user_id}
 admin_to_user = {}
+# Словарь для отслеживания, начал ли пользователь диалог
+user_started_conversation = {}
 
 # Загрузка конфигурации
 try:
@@ -32,6 +34,8 @@ except (KeyError, ValueError) as e:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет приветственное сообщение при команде /start."""
+    user_id = update.message.from_user.id
+    user_started_conversation[user_id] = True
     await update.message.reply_text(
         "Здравствуйте! Это бот технической поддержки. "
         "Опишите вашу проблему, и мы постараемся помочь."
@@ -52,30 +56,48 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    # Создание нового тикета и рассылка всем админам
-    text = f"Новый тикет от пользователя {user.full_name} (ID: {user_id})."
-    
-    keyboard = [
-        [InlineKeyboardButton("Ответить на тикет", callback_data=f"start_chat_{user_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Проверяем, было ли это первое сообщение после /start
+    if user_started_conversation.get(user_id):
+        # Создание нового тикета и рассылка всем админам
+        text = f"Новый тикет от пользователя {user.full_name} (ID: {user_id})."
+        
+        keyboard = [
+            [InlineKeyboardButton("Ответить на тикет", callback_data=f"start_chat_{user_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    for admin_id in ADMIN_IDS:
-        try:
-            # Отправляем информацию о тикете
-            await context.bot.send_message(chat_id=admin_id, text=text)
-            # Пересылаем исходное сообщение
+        for admin_id in ADMIN_IDS:
+            try:
+                # Отправляем информацию о тикете
+                await context.bot.send_message(chat_id=admin_id, text=text)
+                # Пересылаем исходное сообщение
+                await context.bot.forward_message(
+                    chat_id=admin_id,
+                    from_chat_id=user_id,
+                    message_id=update.message.message_id
+                )
+                # Отправляем кнопку для ответа
+                await context.bot.send_message(chat_id=admin_id, text="Нажмите, чтобы начать диалог:", reply_markup=reply_markup)
+            except Exception as e:
+                logger.error(f"Не удалось отправить сообщение админу {admin_id}: {e}")
+
+        # Сбрасываем флаг, чтобы кнопка не отправлялась повторно
+        user_started_conversation[user_id] = False
+        await update.message.reply_text("Ваше сообщение отправлено администраторам. Ожидайте ответа.")
+    else:
+        # Если пользователь пишет без /start или после того, как тикет был создан
+        # и взят в работу, но диалог еще не начат, просто пересылаем сообщение
+        # тому админу, который уже взял тикет (если таковой есть)
+        if user_id in active_chats:
+            admin_id = active_chats[user_id]
             await context.bot.forward_message(
                 chat_id=admin_id,
                 from_chat_id=user_id,
                 message_id=update.message.message_id
             )
-            # Отправляем кнопку для ответа
-            await context.bot.send_message(chat_id=admin_id, text="Нажмите, чтобы начать диалог:", reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"Не удалось отправить сообщение админу {admin_id}: {e}")
-
-    await update.message.reply_text("Ваше сообщение отправлено администраторам. Ожидайте ответа.")
+        # Если диалог не начат, можно либо игнорировать, либо напомнить о /start
+        else:
+            await update.message.reply_text("Чтобы начать новый диалог, пожалуйста, используйте команду /start.")
 
 
 async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -145,13 +167,13 @@ async def post_init_setup(application: Application) -> None:
     """Устанавливает меню команд после инициализации."""
     # Команды для обычных пользователей
     user_commands = [
-        BotCommand("start", "Начать / Перезапустить")
+        BotCommand("start", "Создать новое обращение в поддержку")
     ]
     await application.bot.set_my_commands(user_commands)
 
     # Расширенные команды для админов
     admin_commands = [
-        BotCommand("start", "Начать / Перезапустить"),
+        BotCommand("start", "Создать новое обращение в поддержку"),
         BotCommand("close_ticket", "Закрыть активный диалог")
     ]
     for admin_id in ADMIN_IDS:
